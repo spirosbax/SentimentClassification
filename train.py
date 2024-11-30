@@ -8,6 +8,10 @@ from models import bow, lstm
 import utils
 import numpy as np
 import random
+import os
+import json
+import csv
+
 
 # load cuda if the system has GPU
 # use MPS if available, otherwise use CPU
@@ -34,6 +38,9 @@ def main(args):
     test_dataset = SentimentDataset(
         split="test", lower=False, supervise_nodes=False
     )
+
+    results_dir = "results"
+    os.makedirs(results_dir, exist_ok=True)
 
     train_epoch_losses_list = []
     val_epoch_metrics_list = []
@@ -214,8 +221,26 @@ def main(args):
     print(f"Last train loss: {round(train_epoch_losses_list[-1][-1], 2)}")
     print(f"Last val metrics: {val_epoch_metrics_list[-1][-1]}")
 
-    for metric_name, value in metrics_summary.items():
-        print(f"{metric_name}: {round(value, 2)}")
+    # Save detailed results for the current run
+    run_results = {
+        "args": vars(args),  # Convert argparse.Namespace to a dictionary
+        "metrics_summary": {metric_name: round(value, 5) for metric_name, value in metrics_summary.items()},
+        "max_epochs": max_epochs,  # List of max epochs for each seed
+        "train_epoch_losses_list": train_epoch_losses_list,  # Losses for all epochs
+        "val_epoch_metrics_list": val_epoch_metrics_list  # Validation metrics for all epochs
+    }
+
+    # File naming based on arguments
+    result_file = os.path.join(
+        results_dir,
+        f"{args.model}_{args.word_embeddings}_{args.trainable_embeddings}_{args.supervise_nodes}.json"
+    )
+
+    # Save as JSON
+    with open(result_file, "w") as f:
+        json.dump(run_results, f, indent=4)
+
+    print(f"Results saved to {result_file}")
 
     return metrics_summary
 
