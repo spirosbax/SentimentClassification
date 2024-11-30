@@ -76,6 +76,7 @@ dependencies:
   - python=3.12.7
   - python-dateutil=2.9.0
   - pytorch=2.5.1
+  - pytorch-cuda=11.8
   - pyyaml=6.0.2
   - pyzmq=25.1.2
   - readline=8.2

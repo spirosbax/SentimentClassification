@@ -9,7 +9,15 @@ import utils
 import numpy as np
 import random
 
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+# load cuda if the system has GPU
+# use MPS if available, otherwise use CPU
+device = None
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
 
 
 def main(args):
