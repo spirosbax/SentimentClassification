@@ -41,7 +41,7 @@ def train_model(
 
     criterion = nn.CrossEntropyLoss()
     train_epoch_losses = []
-    val_epoch_accuracies = []
+    val_epoch_metrics = []
 
     # early stopping
     best_val_accuracy = float("-inf")
@@ -78,10 +78,9 @@ def train_model(
 
             # validation loop
             if epoch % eval_every == 0:
-                # Evaluate accuracy on validation set
                 with torch.no_grad():
                     model.eval()
-                    _, val_accuracy, _, _, _, _ = eval_fn(
+                    val_metrics = eval_fn(
                         model,
                         dev_data.data,
                         device=device,
@@ -90,31 +89,28 @@ def train_model(
                         batch_size=batch_size,
                         batch_fn=batch_fn,
                     )
-                    val_epoch_accuracies.append(val_accuracy)
+                    val_epoch_metrics.append(val_metrics)
 
                 print(
-                    f"Epoch {epoch}, train loss: {train_epoch_losses[-1]}, val accuracy: {val_epoch_accuracies[-1]}"
+                    f"Epoch {epoch}, train loss: {train_epoch_losses[-1]}, "
+                    f"val accuracy: {val_metrics['accuracy']}"
                 )
 
-                if val_accuracy > best_val_accuracy:
-                    best_val_accuracy = val_accuracy
+                if val_metrics['accuracy'] > best_val_accuracy:
+                    best_val_accuracy = val_metrics['accuracy']
                     best_epoch = epoch
                     patience_counter = 0
-
-                    # Save the best model in a variable
                     best_model = copy.deepcopy(model)
-
                 else:
                     patience_counter += 1
                     if patience_counter >= patience:
                         print(f"Early stopping at epoch {epoch}")
                         break
 
-        # Evaluate accuracy on test set
-        # Load the best model
+        # Evaluate on test set using best model
         with torch.no_grad():
             best_model.eval()
-            _, test_accuracy, _, _, _, _ = eval_fn(
+            test_metrics = eval_fn(
                 best_model,
                 test_data.data,
                 device=device,
@@ -123,39 +119,21 @@ def train_model(
                 batch_size=batch_size,
                 batch_fn=batch_fn,
             )
-            print(f"Test accuracy: {test_accuracy}")
+            print(f"Test metrics: {test_metrics}")
 
     except KeyboardInterrupt:
         print("Interrupted")
 
-    return train_epoch_losses, val_epoch_accuracies, test_accuracy, epoch
+    return train_epoch_losses, val_epoch_metrics, test_metrics, epoch
 
 
 def evaluate_metrics_extended_batch(
     model, data, criterion, device, batch_fn=None, prep_fn=None, batch_size=16
 ):
     """
-    Evaluates a model on the given dataset using mini-batches and returns Accuracy, Weighted F1 Score, Macro F1 Score, and Confusion Matrix.
-
-    Args:
-        model: The trained PyTorch model to evaluate.
-        data: The dataset to evaluate on (e.g., list, DataLoader).
-        criterion: The loss function to use.
-        batch_fn: Function to generate mini-batches from the data.
-                  Defaults to `get_minibatch`.
-        prep_fn: Function to preprocess each mini-batch into model inputs and targets.
-                 Defaults to `prepare_minibatch`.
-        batch_size (int): The number of examples per batch.
-
-    Returns:
-        A tuple containing:
-            - loss (float): The average loss over the dataset.
-            - accuracy (float): The proportion of correct predictions.
-            - weighted_f1 (float): The weighted F1 score across all classes.
-            - macro_f1 (float): The macro F1 score across all classes.
-            - confusion_matrix (ndarray): The confusion matrix of the predictions.
+    Evaluates a model on the given dataset and returns a dictionary of metrics.
     """
-    model.eval()  # Set model to evaluation mode (disables dropout, etc.)
+    model.eval()
 
     correct = 0
     total = 0
@@ -187,19 +165,20 @@ def evaluate_metrics_extended_batch(
 
     loss = loss / num_batches
 
-    # Compute Accuracy
+    # Calculate all metrics
     accuracy = correct / total if total > 0 else 0.0
-
-    # Compute Weighted F1 Score
     weighted_f1 = f1_score(y_true, y_pred, average="weighted")
-
-    # Compute Macro F1 Score
     macro_f1 = f1_score(y_true, y_pred, average="macro")
 
-    # Compute Confusion Matrix
-    # conf_matrix = confusion_matrix(y_true, y_pred)
+    # Return metrics as a dictionary
+    metrics = {
+        "loss": loss / num_batches,
+        "accuracy": accuracy,
+        "weighted_f1": weighted_f1,
+        "macro_f1": macro_f1,
+    }
 
-    return loss, accuracy, weighted_f1, macro_f1, y_true, y_pred
+    return metrics
 
 
 def get_minibatch(data, batch_size=25, shuffle=True):
@@ -245,10 +224,51 @@ def prepare_minibatch(mb, vocab, device):
 
     return x, y
 
+def prepare_treelstm_minibatch(mb, vocab, device):
+  """
+  Returns sentences reversed (last word first)
+  Returns transitions together with the sentences.
+  """
+  batch_size = len(mb)
+  maxlen = max([len(ex.tokens) for ex in mb])
+
+  # vocab returns 0 if the word is not there
+  # NOTE: reversed sequence!
+  x = [pad([vocab.w2i.get(t, 0) for t in ex.tokens], maxlen)[::-1] for ex in mb]
+
+  x = torch.LongTensor(x)
+  x = x.to(device)
+
+  y = [ex.label for ex in mb]
+  y = torch.LongTensor(y)
+  y = y.to(device)
+
+  maxlen_t = max([len(ex.transitions) for ex in mb])
+  transitions = [pad(ex.transitions, maxlen_t, pad_value=2) for ex in mb]
+  transitions = np.array(transitions)
+  transitions = transitions.T  # time-major
+
+  return (x, transitions), y
 
 def pad(tokens, length, pad_value=1):
     """add padding 1s to a sequence to that it has the desired length"""
     return tokens + [pad_value] * (length - len(tokens))
+
+
+
+def batch(states):
+    """
+    Turns a list of states into a single tensor for fast processing.
+    This function also chunks (splits) each state into a (h, c) pair"""
+    return torch.cat(states, 0).chunk(2, 1)
+
+def unbatch(state):
+    """
+    Turns a tensor back into a list of states.
+    First, (h, c) are merged into a single state.
+    Then the result is split into a list of sentences.
+    """
+    return torch.split(torch.cat(state, 1), 1, 0)
 
 
 def download_file(url, output_file):
@@ -300,7 +320,6 @@ def load_pretrained_embeddings(file_path):
             embedding_dict[word] = vector
     embedding_dim = len(next(iter(embedding_dict.values())))  # Get the embedding size
     return embedding_dict, embedding_dim
-
 
 def create_vocabulary_and_embeddings(embeddings, verbose=True):
     """

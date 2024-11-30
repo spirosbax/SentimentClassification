@@ -50,9 +50,10 @@ class Vocabulary:
 
 
 class SentimentDataset(Dataset):
-    def __init__(self, split="train", lower=False):
+    def __init__(self, split="train", lower=False, supervise_nodes=False):
         self.split = split
         self.lower = lower
+        self.supervise_nodes = supervise_nodes
 
         # Download and extract data if needed
         self._maybe_download_and_extract()
@@ -63,7 +64,7 @@ class SentimentDataset(Dataset):
 
         # Load data
         self.Example = namedtuple("Example", ["tokens", "tree", "label", "transitions"])
-        self.data = list(self._examplereader(f"trees/{split}.txt", lower=lower))
+        self.data = list(self._examplereader(f"trees/{split}.txt", lower=lower, supervise_nodes=supervise_nodes))
 
         # Build vocabulary
         self.vocab = self._build_vocabulary()
@@ -111,8 +112,14 @@ class SentimentDataset(Dataset):
         s = re.sub("\([0-4] ", "", s)
         s = re.sub("\)", "1", s)
         return list(map(int, s.split()))
+    
+    def _extract_subtrees(self, tree):
+        subtrees_with_labels = []
+        for subtree in tree.subtrees():
+            subtrees_with_labels.append((subtree.label(), subtree))
+        return subtrees_with_labels
 
-    def _examplereader(self, path, lower=False):
+    def _examplereader(self, path, lower=False, supervise_nodes=False):
         """Returns all examples in a file one by one."""
         for line in self._filereader(path):
             line = line.lower() if lower else line
@@ -121,6 +128,17 @@ class SentimentDataset(Dataset):
             label = int(line[1])
             trans = self._transitions_from_treestring(line)
             yield self.Example(tokens=tokens, tree=tree, label=label, transitions=trans)
+            
+            if supervise_nodes:
+                subtrees_with_labels = self._extract_subtrees(tree)
+                for label, subtree in subtrees_with_labels:
+                    line_repr = str(subtree).replace('\n', '')
+                    yield self.Example(
+                        tokens=self._tokens_from_treestring(line_repr),
+                        tree=subtree,
+                        label=int(label), 
+                        transitions=self._transitions_from_treestring(line_repr)
+                    )
 
     def _build_vocabulary(self):
         vocab = Vocabulary()

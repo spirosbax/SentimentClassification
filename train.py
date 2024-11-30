@@ -17,13 +17,19 @@ def main(args):
     seeds = [1, 42, 1337]
 
     # load data
-    train_dataset = SentimentDataset(split="train", lower=False)
-    dev_dataset = SentimentDataset(split="dev", lower=False)
-    test_dataset = SentimentDataset(split="test", lower=False)
+    train_dataset = SentimentDataset(
+        split="train", lower=False, supervise_nodes=args.supervise_nodes
+    )
+    dev_dataset = SentimentDataset(
+        split="dev", lower=False, supervise_nodes=False
+    )  # keep dev and test as is
+    test_dataset = SentimentDataset(
+        split="test", lower=False, supervise_nodes=False
+    )
 
     train_epoch_losses_list = []
-    val_epoch_accuracies_list = []
-    test_accuracies = []
+    val_epoch_metrics_list = []
+    test_metrics_list = []
     max_epochs = []
     for seed in seeds:
 
@@ -49,6 +55,7 @@ def main(args):
                 eps=1e-08,
                 amsgrad=True,
             )
+            prep_fn = utils.prepare_minibatch
         elif args.model == "CBOW":
             embedding_dim = 300
             n_classes = len(train_dataset.vocab.t2i)
@@ -68,6 +75,7 @@ def main(args):
                 eps=1e-08,
                 amsgrad=False,
             )
+            prep_fn = utils.prepare_minibatch
         elif args.model == "DeepCBOW":
             embedding_dim = 300
             n_classes = len(train_dataset.vocab.t2i)
@@ -90,11 +98,12 @@ def main(args):
                 eps=1e-08,
                 amsgrad=False,
             )
+            prep_fn = utils.prepare_minibatch
         elif args.model == "PTDeepCBOW":
             hidden_layer = 100
             n_classes = len(train_dataset.vocab.t2i)
-            vocab, pretrained_vectors, embedding_dim = utils.create_vocabulary_and_embeddings(
-                args.word_embeddings
+            vocab, pretrained_vectors, embedding_dim = (
+                utils.create_vocabulary_and_embeddings(args.word_embeddings)
             )
             model = bow.PTDeepCBOW(
                 vocab_size=len(vocab.w2i),
@@ -115,14 +124,49 @@ def main(args):
                 eps=1e-08,
                 amsgrad=False,
             )
+            prep_fn = utils.prepare_minibatch
         elif args.model == "LSTM":
-            raise NotImplementedError("LSTM not implemented")
+            vocab, pretrained_vectors, embedding_dim = (
+                utils.create_vocabulary_and_embeddings(args.word_embeddings)
+            )
+            model = lstm.LSTMClassifier(
+                len(vocab.w2i), embedding_dim, 168, len(vocab.t2i), vocab
+            )
+
+            # copy pre-trained word vectors into embeddings table
+            with torch.no_grad():
+                model.embed.weight.data.copy_(torch.from_numpy(pretrained_vectors))
+                model.embed.weight.requires_grad = args.trainable_embeddings
+
+            print(model)
+            utils.print_parameters(model)
+
+            model = model.to(device)
+            optimizer = optim.Adam(model.parameters(), lr=3e-4)
+            prep_fn = utils.prepare_minibatch
         elif args.model == "TreeLSTM":
-            raise NotImplementedError("TreeLSTM not implemented")
+            vocab, pretrained_vectors, embedding_dim = (
+                utils.create_vocabulary_and_embeddings(args.word_embeddings)
+            )
+            model = lstm.TreeLSTMClassifier(
+                len(vocab.w2i), embedding_dim, 168, len(vocab.t2i), vocab
+            )
+
+            # copy pre-trained word vectors into embeddings table
+            with torch.no_grad():
+                model.embed.weight.data.copy_(torch.from_numpy(pretrained_vectors))
+                model.embed.weight.requires_grad = args.trainable_embeddings
+
+            print(model)
+            utils.print_parameters(model)
+
+            model = model.to(device)
+            optimizer = optim.Adam(model.parameters(), lr=3e-4)
+            prep_fn = utils.prepare_treelstm_minibatch
         else:
             raise ValueError(f"Model {args.model} not supported")
 
-        train_epoch_losses, val_epoch_accuracies, test_accuracy, max_epoch = (
+        train_epoch_losses, val_epoch_metrics, test_metrics, max_epoch = (
             utils.train_model(
                 model,
                 optimizer,
@@ -135,22 +179,37 @@ def main(args):
                 batch_size=args.batch_size,
                 patience=args.patience,
                 batch_fn=utils.get_minibatch,
-                prep_fn=utils.prepare_minibatch,
+                prep_fn=prep_fn,
                 eval_fn=utils.evaluate_metrics_extended_batch,
             )
         )
+
         train_epoch_losses_list.append(train_epoch_losses)
-        val_epoch_accuracies_list.append(val_epoch_accuracies)
-        test_accuracies.append(test_accuracy)
+        val_epoch_metrics_list.append(val_epoch_metrics)
+        test_metrics_list.append(test_metrics)
         max_epochs.append(max_epoch)
 
-    # print max_epochs, test_accuracies, average test accuracy, and standard deviation, last train accuracy and last val accuracy, rounded to 2 decimal places
+    # Calculate averages and standard deviations for all metrics
+    metrics_summary = {}
+
+    # Get all metric names from the last test metrics
+    metric_names = test_metrics_list[0].keys()
+
+    for metric in metric_names:
+        values = [test_metrics[metric] for test_metrics in test_metrics_list]
+        metrics_summary[f"test_{metric}_mean"] = np.mean(values)
+        metrics_summary[f"test_{metric}_std"] = np.std(values)
+
+    # Print results
+    print(f"Args: {args}")
     print(f"Max epochs: {max_epochs}")
-    print(f"Last train accuracy: {round(train_epoch_losses_list[-1][-1], 2)}")
-    print(f"Last val accuracy: {round(val_epoch_accuracies_list[-1][-1], 2)}")
-    print(f"Average test accuracy: {round(np.mean(test_accuracies), 2)}")
-    print(f"Standard deviation: {round(np.std(test_accuracies), 2)}")
-    print(f"Test accuracies: {test_accuracies}")
+    print(f"Last train loss: {round(train_epoch_losses_list[-1][-1], 2)}")
+    print(f"Last val metrics: {val_epoch_metrics_list[-1][-1]}")
+
+    for metric_name, value in metrics_summary.items():
+        print(f"{metric_name}: {round(value, 2)}")
+
+    return metrics_summary
 
 
 if __name__ == "__main__":
@@ -164,7 +223,7 @@ if __name__ == "__main__":
         choices=["LSTM", "TreeLSTM", "BOW", "CBOW", "DeepCBOW", "PTDeepCBOW"],
     )
     parser.add_argument(
-        "--node_level",
+        "--supervise_nodes",
         action="store_true",
         help="Use node level supervision / convert each subtree into its own sample",
         default=False,
