@@ -110,6 +110,40 @@ def train_model(
         # Evaluate on test set using best model
         with torch.no_grad():
             best_model.eval()
+            
+            # Group test data by sentence length
+            length_bins = {}
+            for example in test_data.data:
+                sent_len = len(example.tokens)
+                # Create bins of size 5 (1-5, 6-10, etc)
+                bin_idx = (sent_len - 1) // 5
+                if bin_idx not in length_bins:
+                    length_bins[bin_idx] = []
+                length_bins[bin_idx].append(example)
+            
+            # Evaluate each length bin separately
+            binned_metrics = {}
+            for bin_idx in sorted(length_bins.keys()):
+                start_len = bin_idx * 5 + 1
+                end_len = (bin_idx + 1) * 5
+                bin_data = length_bins[bin_idx]
+                
+                bin_metrics = eval_fn(
+                    best_model,
+                    bin_data,
+                    device=device,
+                    criterion=criterion,
+                    prep_fn=prep_fn,
+                    batch_size=batch_size,
+                    batch_fn=batch_fn,
+                )
+                
+                binned_metrics[f"bin_{bin_idx}_{start_len}-{end_len}"] = {
+                    "metrics": bin_metrics,
+                    "num_examples": len(bin_data)
+                }
+            
+            # Also compute overall metrics
             test_metrics = eval_fn(
                 best_model,
                 test_data.data,
@@ -119,12 +153,17 @@ def train_model(
                 batch_size=batch_size,
                 batch_fn=batch_fn,
             )
-            print(f"Test metrics: {test_metrics}")
+            
+            print(f"Overall test metrics: {test_metrics}")
+            print("\nMetrics by sentence length:")
+            for bin_name, bin_results in binned_metrics.items():
+                print(f"\n{bin_name} (n={bin_results['num_examples']}):")
+                print(f"Metrics: {bin_results['metrics']}")
 
     except KeyboardInterrupt:
         print("Interrupted")
 
-    return train_epoch_losses, val_epoch_metrics, test_metrics, epoch
+    return train_epoch_losses, val_epoch_metrics, test_metrics, binned_metrics, epoch
 
 
 def evaluate_metrics_extended_batch(

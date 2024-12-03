@@ -13,8 +13,7 @@ import json
 import csv
 
 
-# load cuda if the system has GPU
-# use MPS if available, otherwise use CPU
+# use GPU if available, fall back to MPS if available, otherwise use CPU
 device = None
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -35,9 +34,7 @@ def main(args):
     dev_dataset = SentimentDataset(
         split="dev", lower=False, supervise_nodes=False
     )  # keep dev and test as is
-    test_dataset = SentimentDataset(
-        split="test", lower=False, supervise_nodes=False
-    )
+    test_dataset = SentimentDataset(split="test", lower=False, supervise_nodes=False)
 
     results_dir = "results"
     os.makedirs(results_dir, exist_ok=True)
@@ -45,6 +42,7 @@ def main(args):
     train_epoch_losses_list = []
     val_epoch_metrics_list = []
     test_metrics_list = []
+    binned_metrics_list = []
     max_epochs = []
     for seed in seeds:
 
@@ -164,7 +162,36 @@ def main(args):
                 utils.create_vocabulary_and_embeddings(args.word_embeddings)
             )
             model = lstm.TreeLSTMClassifier(
-                len(vocab.w2i), embedding_dim, 168, len(vocab.t2i), vocab
+                len(vocab.w2i),
+                embedding_dim,
+                168,
+                len(vocab.t2i),
+                vocab,
+                reduce_fn=lstm.TreeLSTMCell,
+            )
+
+            # copy pre-trained word vectors into embeddings table
+            with torch.no_grad():
+                model.embed.weight.data.copy_(torch.from_numpy(pretrained_vectors))
+                model.embed.weight.requires_grad = args.trainable_embeddings
+
+            print(model)
+            utils.print_parameters(model)
+
+            model = model.to(device)
+            optimizer = optim.Adam(model.parameters(), lr=3e-4)
+            prep_fn = utils.prepare_treelstm_minibatch
+        elif args.model == "ChildSumTreeLSTM":
+            vocab, pretrained_vectors, embedding_dim = (
+                utils.create_vocabulary_and_embeddings(args.word_embeddings)
+            )
+            model = lstm.TreeLSTMClassifier(
+                len(vocab.w2i),
+                embedding_dim,
+                168,
+                len(vocab.t2i),
+                vocab,
+                reduce_fn=lstm.ChildSumTreeLSTMCell,
             )
 
             # copy pre-trained word vectors into embeddings table
@@ -181,7 +208,7 @@ def main(args):
         else:
             raise ValueError(f"Model {args.model} not supported")
 
-        train_epoch_losses, val_epoch_metrics, test_metrics, max_epoch = (
+        train_epoch_losses, val_epoch_metrics, test_metrics, binned_metrics, max_epoch = (
             utils.train_model(
                 model,
                 optimizer,
@@ -202,6 +229,7 @@ def main(args):
         train_epoch_losses_list.append(train_epoch_losses)
         val_epoch_metrics_list.append(val_epoch_metrics)
         test_metrics_list.append(test_metrics)
+        binned_metrics_list.append(binned_metrics)
         max_epochs.append(max_epoch)
 
     # Calculate averages and standard deviations for all metrics
@@ -215,6 +243,24 @@ def main(args):
         metrics_summary[f"test_{metric}_mean"] = np.mean(values)
         metrics_summary[f"test_{metric}_std"] = np.std(values)
 
+    # For each bin, calculate mean and std of each metric
+    bins = set()
+    for binned_metrics in binned_metrics_list:
+        bins.update(binned_metrics.keys())
+    
+    for bin_name in sorted(bins):
+        for metric in metric_names:
+            # Get metric values for this bin across all seeds
+            values = []
+            for binned_metrics in binned_metrics_list:
+                if bin_name in binned_metrics:
+                    values.append(binned_metrics[bin_name]['metrics'][metric])
+            
+            # Calculate mean and std if we have values
+            if values:
+                metrics_summary[f"{bin_name}_{metric}_mean"] = np.mean(values)
+                metrics_summary[f"{bin_name}_{metric}_std"] = np.std(values)
+
     # Print results
     print(f"Args: {args}")
     print(f"Max epochs: {max_epochs}")
@@ -224,16 +270,19 @@ def main(args):
     # Save detailed results for the current run
     run_results = {
         "args": vars(args),  # Convert argparse.Namespace to a dictionary
-        "metrics_summary": {metric_name: round(value, 5) for metric_name, value in metrics_summary.items()},
+        "metrics_summary": {
+            metric_name: round(value, 5)
+            for metric_name, value in metrics_summary.items()
+        },
         "max_epochs": max_epochs,  # List of max epochs for each seed
         "train_epoch_losses_list": train_epoch_losses_list,  # Losses for all epochs
-        "val_epoch_metrics_list": val_epoch_metrics_list  # Validation metrics for all epochs
+        "val_epoch_metrics_list": val_epoch_metrics_list,  # Validation metrics for all epochs
     }
 
     # File naming based on arguments
     result_file = os.path.join(
         results_dir,
-        f"{args.model}_{args.word_embeddings}_{args.trainable_embeddings}_{args.supervise_nodes}.json"
+        f"{args.model}_{args.word_embeddings}_{args.trainable_embeddings}_{args.supervise_nodes}.json",
     )
 
     # Save as JSON
@@ -253,7 +302,15 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Model to train",
-        choices=["LSTM", "TreeLSTM", "BOW", "CBOW", "DeepCBOW", "PTDeepCBOW"],
+        choices=[
+            "LSTM",
+            "TreeLSTM",
+            "ChildSumTreeLSTM",
+            "BOW",
+            "CBOW",
+            "DeepCBOW",
+            "PTDeepCBOW",
+        ],
     )
     parser.add_argument(
         "--supervise_nodes",
