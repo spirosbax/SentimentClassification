@@ -103,6 +103,7 @@ def train_model(
                     best_model = copy.deepcopy(model)
                 else:
                     patience_counter += 1
+                    print(f"Patience counter: {patience_counter}")
                     if patience_counter >= patience:
                         print(f"Early stopping at epoch {epoch}")
                         break
