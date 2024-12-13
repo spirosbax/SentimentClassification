@@ -16,3 +16,7 @@ Results will be saved in the `results` folder, in json format.
 
 Our results can be found in the `results` folder.
 To run the analysis, use the `analysis.ipynb` notebook, it generates the plots and tables in the report.
+
+# Inspect
+
+To inspect the code, use the `inspect.ipynb` notebook, it prints the source code of the important functions and classes.
