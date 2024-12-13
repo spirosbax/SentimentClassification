@@ -1,4 +1,4 @@
-How to run the code
+# How to run the code
 
 ```bash
 conda env create -f nlp_gpu.yml
@@ -11,3 +11,8 @@ python train.py --model TreeLSTM --word_embeddings glove --trainable_embeddings 
 ```
 
 Results will be saved in the `results` folder, in json format.
+
+# Analysis
+
+Our results can be found in the `results` folder.
+To run the analysis, use the `analysis.ipynb` notebook, it generates the plots and tables in the report.
